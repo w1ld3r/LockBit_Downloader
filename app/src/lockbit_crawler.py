@@ -1,7 +1,10 @@
+#!/usr/bin/env python3
+
 import datetime
 import multiprocessing
 import pathlib
 import urllib
+from argparse import ArgumentParser, Namespace
 
 import backoff
 import pycurl
@@ -9,13 +12,14 @@ import ratelimit
 import requests
 from bs4 import BeautifulSoup
 
+__lockbit7z__ = "http://lockbit7z6rzyojiye437jp744d4uwtff7aq7df7gh2jvwqtv525c4yd.onion"
+__default_nb_dl_worker__ = 3
 __proxy__ = "socks5h://localhost:9050"
 __useragent__ = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
 __export_dir__ = "./LockBit_Data"
-
 __request_calls_limit__ = 10
 __request_period_limit__ = 60
-__request_max_tries__ = 8
+__request_max_tries__ = 3
 __download_max_tries__ = 1
 
 
@@ -26,22 +30,28 @@ def get_session() -> requests.Session:
     return session
 
 
+def get_url_path(url: str) -> str:
+    return "/".join(url.split("/")[3:])
+
+
 @backoff.on_predicate(backoff.constant, jitter=None, max_tries=__request_max_tries__)
 @ratelimit.sleep_and_retry
 @ratelimit.limits(calls=__request_calls_limit__, period=__request_period_limit__)
-def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
+def get_soup(url: str) -> BeautifulSoup:
+    session = get_session()
     now = datetime.datetime.now()
     try:
         with session.get(url) as r:
             r.raise_for_status()
             return BeautifulSoup(r.text, "html.parser")
     except Exception as e:
-        print(f"Unable to get webpage at {url}\n{e}")
+        print(f"Unable to get webpage at {url}")
+        print(e)
         return None
     finally:
         after = datetime.datetime.now()
         delay = after - now
-        print(f"[^] Tooks {delay} seconds to request {url}")
+        print(f"[^] Tooks {delay} seconds to request {get_url_path(url)}")
 
 
 @backoff.on_predicate(backoff.fibo, max_tries=__request_max_tries__)
@@ -61,17 +71,17 @@ def download_file(session: requests.Session, url: str, res_path: str) -> bool:
             cl.close()
         return True
     except Exception as e:
-        print(f"[!] Unable to download file at {url}\n{e}")
+        print(f"[!] Unable to download file at {url}")
+        print(e)
         return False
     finally:
         after = datetime.datetime.now()
         delay = after - now
-        print(f"[^] Tooks {delay} seconds to download file at {url}")
+        print(f"[^] Tooks {delay} seconds to download file at {get_url_path(url)}")
 
 
 def create_dir(url: str) -> None:
-    new_dir = "/".join(url.split("/")[3:])
-    return pathlib.Path(__export_dir__, urllib.parse.unquote(new_dir)).mkdir(
+    return pathlib.Path(__export_dir__, urllib.parse.unquote(get_url_path(url))).mkdir(
         exist_ok=True, parents=True
     )
 
@@ -81,8 +91,7 @@ def get_content_at_url(
 ) -> int:
     count_files = 0
     count_dirs = 0
-    session = get_session()
-    html = get_soup(session, url)
+    html = get_soup(url)
     if not html:
         return 0
     link_elements = html.find_all("td", class_="link")
@@ -99,7 +108,7 @@ def get_content_at_url(
             create_dir(new_url)
             path_urls.put(new_url)
             count_dirs += 1
-    print(f"[-] Found {count_dirs} dir(s) and {count_files} files(s) at {url}")
+    print(f"[-] Found {count_dirs} dir(s) and {count_files} files(s) at {get_url_path(url)}")
     return count_files + count_dirs
 
 
@@ -114,7 +123,7 @@ def spider_crawl(
         if path_urls.empty():
             break
         search_url = path_urls.get()
-        print(f"[-] Crawling content at {search_url}")
+        print(f"[-] Crawling content at {get_url_path(search_url)}")
         get_content_at_url(search_url, path_urls, file_urls)
     return True
 
@@ -125,7 +134,7 @@ def files_downloader(file_urls: multiprocessing.Queue) -> bool:
         file_url = file_urls.get()
         if not file_url:
             break
-        file_path = "/".join(file_url.split("/")[3:])
+        file_path = get_url_path(file_url)
         print(f"[-] Downloading content at {file_path}")
         download_file(session, file_url, file_path)
     return True
@@ -133,10 +142,8 @@ def files_downloader(file_urls: multiprocessing.Queue) -> bool:
 
 def crawl_lockbit(base_url: str, company_name: str, nb_downloader: int = 1) -> bool:
     url = f"{base_url}/{company_name}/"
-
     path_urls: multiprocessing.Queue = multiprocessing.Queue()
     file_urls: multiprocessing.Queue = multiprocessing.Queue()
-
     crawler = multiprocessing.Process(
         target=spider_crawl, args=(url, path_urls, file_urls)
     )
@@ -148,13 +155,39 @@ def crawl_lockbit(base_url: str, company_name: str, nb_downloader: int = 1) -> b
     for downloader in downloaders:
         downloader.start()
     crawler.join()
+    # wait until all files are downloaded
+    while True:
+        if file_urls.empty():
+            for _ in range(nb_downloader):
+                file_urls.put(None)
+            break
     for downloader in downloaders:
         downloader.join()
     return True
 
 
+def get_args() -> Namespace:
+    parser = ArgumentParser(description="Tool to download leaks from LockBit 7z")
+    parser.add_argument(
+        "-u",
+        "--base-url",
+        help="LockBit base URL",
+        type=str,
+        default=__lockbit7z__,
+    )
+    parser.add_argument(
+        "-e", "--company-name", help="Company Name", type=str, required=True
+    )
+    parser.add_argument(
+        "-k",
+        "--nb-downloader",
+        help="Number of downloader workers",
+        type=int,
+        default=__default_nb_dl_worker__,
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    base_url = "http://lockbit7z6rzyojiye437jp744d4uwtff7aq7df7gh2jvwqtv525c4yd.onion"
-    company_name = "thalesgroup.com"
-    nb_downloader = 5
-    crawl_lockbit(base_url, company_name, nb_downloader)
+    args = get_args()
+    crawl_lockbit(args.base_url, args.company_name, args.nb_downloader)
