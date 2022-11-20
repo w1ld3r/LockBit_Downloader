@@ -88,7 +88,7 @@ def get_content_at_url(session, url, parent_dir="") -> set():
         file_path = f"./{parent_dir}/{href_link}"
         # href_link is file
         if not href_link.endswith("/"):
-            # download_file(session, new_url, file_path)
+            download_file(session, new_url, file_path)
             count_files += 1
         # href_link is directory and not parent directory
         elif href_link != "../":
