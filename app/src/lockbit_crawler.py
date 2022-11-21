@@ -58,7 +58,6 @@ def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
         print(f"[^] Tooks {delay} seconds to request {url}")
 
 
-@backoff.on_predicate(backoff.fibo, max_tries=__request_max_tries__)
 @backoff.on_exception(backoff.expo, pycurl.error, max_tries=__download_max_tries__)
 @ratelimit.sleep_and_retry
 @ratelimit.limits(calls=__request_calls_limit__, period=__request_period_limit__)
@@ -113,9 +112,7 @@ def get_content_at_url(
         elif href_link != "../":
             path_urls.put(new_url)
             count_dirs += 1
-    print(
-        f"[-] Found {count_dirs} dir(s) and {count_files} files(s)"
-    )
+    print(f"[-] Found {count_dirs} dir(s) and {count_files} files(s)")
     return count_files + count_dirs
 
 
