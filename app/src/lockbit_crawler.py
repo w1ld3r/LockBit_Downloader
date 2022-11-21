@@ -17,6 +17,7 @@ __default_nb_dl_worker__ = 3
 __proxy__ = "socks5h://localhost:9050"
 __useragent__ = "Mozilla/5.0 (Windows NT 10.0; rv:91.0) Gecko/20100101 Firefox/91.0"
 __export_dir__ = "./LockBit_Data"
+__report_fname__ = f"report_dl_{datetime.datetime.now().timestamp()}.csv"
 __request_calls_limit__ = 10
 __request_period_limit__ = 60
 __request_max_tries__ = 3
@@ -34,9 +35,16 @@ def get_url_path(url: str) -> str:
     return urllib.parse.urlparse(url).path
 
 
-def get_dl_path(url: str) -> str:
-    cwd = pathlib.Path.cwd()
-    return f"{cwd}/{__export_dir__}{urllib.parse.unquote(get_url_path(url))}"
+def get_dl_root_path() -> pathlib.Path:
+    return pathlib.Path(f"{pathlib.Path.cwd()}/{__export_dir__}")
+
+
+def get_dl_path(url: str) -> pathlib.Path:
+    return pathlib.Path(f"{get_dl_root_path()}{urllib.parse.unquote(get_url_path(url))}")
+
+
+def get_report_path() -> pathlib.Path:
+    return pathlib.Path(f"{get_dl_root_path()}/{__report_fname__}")
 
 
 @backoff.on_predicate(backoff.constant, jitter=None, max_tries=__request_max_tries__)
@@ -85,6 +93,16 @@ def download_file(session: requests.Session, url: str) -> bool:
 
 def create_dir(url: str) -> None:
     return pathlib.Path(get_dl_path(url)).mkdir(exist_ok=True, parents=True)
+
+
+def write_report(file_url, dl_res) -> bool:
+    report_path = get_report_path()
+    data = f"{datetime.datetime.now().timestamp()},"
+    data += f"{file_url},"
+    data += f"{get_dl_path(file_url)},"
+    data += f"{dl_res}\n"
+    with open(report_path, "a") as f:
+        f.write(data)
 
 
 def get_content_at_url(
@@ -140,7 +158,8 @@ def files_downloader(file_urls: multiprocessing.Queue) -> bool:
         if not file_url:
             break
         print(f"[-] Downloading content at {file_url}")
-        download_file(session, file_url)
+        dl_res = download_file(session, file_url)
+        write_report(file_url, dl_res)
     return True
 
 
