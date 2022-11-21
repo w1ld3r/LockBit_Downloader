@@ -31,14 +31,18 @@ def get_session() -> requests.Session:
 
 
 def get_url_path(url: str) -> str:
-    return "/".join(url.split("/")[3:])
+    return urllib.parse.urlparse(url).path
+
+
+def get_dl_path(url: str) -> str:
+    cwd = pathlib.Path.cwd()
+    return f"{cwd}/{__export_dir__}{urllib.parse.unquote(get_url_path(url))}"
 
 
 @backoff.on_predicate(backoff.constant, jitter=None, max_tries=__request_max_tries__)
 @ratelimit.sleep_and_retry
 @ratelimit.limits(calls=__request_calls_limit__, period=__request_period_limit__)
-def get_soup(url: str) -> BeautifulSoup:
-    session = get_session()
+def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
     now = datetime.datetime.now()
     try:
         with session.get(url) as r:
@@ -51,18 +55,18 @@ def get_soup(url: str) -> BeautifulSoup:
     finally:
         after = datetime.datetime.now()
         delay = after - now
-        print(f"[^] Tooks {delay} seconds to request {get_url_path(url)}")
+        print(f"[^] Tooks {delay} seconds to request {url}")
 
 
 @backoff.on_predicate(backoff.fibo, max_tries=__request_max_tries__)
 @backoff.on_exception(backoff.expo, pycurl.error, max_tries=__download_max_tries__)
 @ratelimit.sleep_and_retry
 @ratelimit.limits(calls=__request_calls_limit__, period=__request_period_limit__)
-def download_file(session: requests.Session, url: str, res_path: str) -> bool:
+def download_file(session: requests.Session, url: str) -> bool:
     now = datetime.datetime.now()
-    res = pathlib.Path(__export_dir__, urllib.parse.unquote(res_path))
+    res_path = get_dl_path(url)
     try:
-        with open(res, "wb") as f:
+        with open(res_path, "wb") as f:
             cl = pycurl.Curl()
             cl.setopt(cl.PROXY, __proxy__)
             cl.setopt(cl.URL, url)
@@ -77,23 +81,25 @@ def download_file(session: requests.Session, url: str, res_path: str) -> bool:
     finally:
         after = datetime.datetime.now()
         delay = after - now
-        print(f"[^] Tooks {delay} seconds to download file at {get_url_path(url)}")
+        print(f"[^] Tooks {delay} seconds to download {res_path}")
 
 
 def create_dir(url: str) -> None:
-    return pathlib.Path(__export_dir__, urllib.parse.unquote(get_url_path(url))).mkdir(
-        exist_ok=True, parents=True
-    )
+    return pathlib.Path(get_dl_path(url)).mkdir(exist_ok=True, parents=True)
 
 
 def get_content_at_url(
-    url: str, path_urls: multiprocessing.Queue, file_urls: multiprocessing.Queue
+    session: requests.Session,
+    url: str,
+    path_urls: multiprocessing.Queue,
+    file_urls: multiprocessing.Queue,
 ) -> int:
     count_files = 0
     count_dirs = 0
-    html = get_soup(url)
+    html = get_soup(session, url)
     if not html:
         return 0
+    create_dir(url)
     link_elements = html.find_all("td", class_="link")
     for link_element in link_elements:
         link = link_element.find("a")
@@ -105,18 +111,20 @@ def get_content_at_url(
             count_files += 1
         # href_link is directory and not parent directory
         elif href_link != "../":
-            create_dir(new_url)
             path_urls.put(new_url)
             count_dirs += 1
-    print(f"[-] Found {count_dirs} dir(s) and {count_files} files(s) at {get_url_path(url)}")
+    print(
+        f"[-] Found {count_dirs} dir(s) and {count_files} files(s)"
+    )
     return count_files + count_dirs
 
 
 def spider_crawl(
     url: str, path_urls: multiprocessing.Queue, file_urls: multiprocessing.Queue
 ) -> bool:
+    session = get_session()
     print(f"[-] Start crawling at {url}")
-    if not get_content_at_url(url, path_urls, file_urls):
+    if not get_content_at_url(session, url, path_urls, file_urls):
         print(f"[!] Nothing to crawl at {url}")
         return False
     while True:
@@ -124,7 +132,7 @@ def spider_crawl(
             break
         search_url = path_urls.get()
         print(f"[-] Crawling content at {get_url_path(search_url)}")
-        get_content_at_url(search_url, path_urls, file_urls)
+        get_content_at_url(session, search_url, path_urls, file_urls)
     return True
 
 
@@ -134,9 +142,8 @@ def files_downloader(file_urls: multiprocessing.Queue) -> bool:
         file_url = file_urls.get()
         if not file_url:
             break
-        file_path = get_url_path(file_url)
-        print(f"[-] Downloading content at {file_path}")
-        download_file(session, file_url, file_path)
+        print(f"[-] Downloading content at {file_url}")
+        download_file(session, file_url)
     return True
 
 
