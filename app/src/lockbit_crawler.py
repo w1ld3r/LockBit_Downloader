@@ -2,6 +2,7 @@
 
 import datetime
 import multiprocessing
+import os
 import pathlib
 import urllib
 from argparse import ArgumentParser, Namespace
@@ -40,7 +41,9 @@ def get_dl_root_path() -> pathlib.Path:
 
 
 def get_dl_path(url: str) -> pathlib.Path:
-    return pathlib.Path(f"{get_dl_root_path()}{urllib.parse.unquote(get_url_path(url))}")
+    return pathlib.Path(
+        f"{get_dl_root_path()}{urllib.parse.unquote(get_url_path(url))}"
+    )
 
 
 def get_report_path() -> pathlib.Path:
@@ -71,15 +74,19 @@ def get_soup(session: requests.Session, url: str) -> BeautifulSoup:
 @ratelimit.limits(calls=__request_calls_limit__, period=__request_period_limit__)
 def download_file(session: requests.Session, url: str) -> bool:
     now = datetime.datetime.now()
-    res_path = get_dl_path(url)
+    dl_path = get_dl_path(url)
+    cl = pycurl.Curl()
+    cl.setopt(cl.PROXY, __proxy__)
+    cl.setopt(cl.URL, url)
+    if os.path.exists(dl_path):
+        f = open(dl_path, "ab")
+        cl.setopt(pycurl.RESUME_FROM, os.path.getsize(dl_path))
+    else:
+        f = open(dl_path, "wb")
+    cl.setopt(pycurl.WRITEDATA, f)
     try:
-        with open(res_path, "wb") as f:
-            cl = pycurl.Curl()
-            cl.setopt(cl.PROXY, __proxy__)
-            cl.setopt(cl.URL, url)
-            cl.setopt(cl.WRITEDATA, f)
-            cl.perform()
-            cl.close()
+        cl.perform()
+        cl.close()
         return True
     except Exception as e:
         print(f"[!] Unable to download file at {url}")
@@ -88,7 +95,7 @@ def download_file(session: requests.Session, url: str) -> bool:
     finally:
         after = datetime.datetime.now()
         delay = after - now
-        print(f"[^] Tooks {delay} seconds to download {res_path}")
+        print(f"[^] Tooks {delay} seconds to download {dl_path}")
 
 
 def create_dir(url: str) -> None:
